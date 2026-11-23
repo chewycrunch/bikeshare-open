@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from src.config import FORBIDDEN, TARGET
-from src.features import build_features, feature_columns
+from src.features import WEATHER_ORDER, build_features, feature_columns
 from src.ingest import load_raw
 
 
@@ -55,6 +55,28 @@ def test_rolling_mean_excludes_today(feats):
     if all(d in by_date.index for d in window):
         expected = sum(by_date[d] for d in window) / 7
         assert feats.set_index("dteday").cnt_roll_7[date] == pytest.approx(expected)
+
+
+def test_weather_lag_is_yesterdays_weather(feats):
+    """weather_severity_lag_1 on date d is the weather of calendar day d-1.
+
+    Hand-computed from data/raw/bike_daily.csv: 2011-10-29 was BAD (the
+    October nor'easter, 627 rides) and 2011-10-30 was GOOD, so the lag on
+    2011-10-30 must be WEATHER_ORDER["BAD"] == 2.0 -- not 0.0, today's own
+    weather. Then the same check on every row whose previous day exists.
+    """
+    by_date = feats.set_index("dteday")
+    assert by_date.weather_severity_lag_1[pd.Timestamp("2011-10-30")] == 2.0
+    assert by_date.weather_severity[pd.Timestamp("2011-10-30")] == 0.0
+
+    raw = load_raw().set_index("dteday").weather.map(WEATHER_ORDER)
+    checked = 0
+    for date, lag in by_date.weather_severity_lag_1.items():
+        prev = date - pd.Timedelta(days=1)
+        if prev in raw.index:
+            assert lag == raw[prev], f"bad weather lag at {date.date()}"
+            checked += 1
+    assert checked > 600, "too few rows actually verified"
 
 
 def test_no_missing_values(feats):
