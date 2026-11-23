@@ -74,9 +74,10 @@ def test_rolling_mean_excludes_today(feats):
     by_date = feats.set_index("dteday")[TARGET]
     date = feats.dteday.iloc[200]
     window = [date - pd.Timedelta(days=k) for k in range(1, 8)]
-    if all(d in by_date.index for d in window):
-        expected = sum(by_date[d] for d in window) / 7
-        assert feats.set_index("dteday").cnt_roll_7[date] == pytest.approx(expected)
+    # Assert, don't skip: an incomplete window would make this test vacuous.
+    assert all(d in by_date.index for d in window), f"window before {date.date()} has a gap"
+    expected = sum(by_date[d] for d in window) / 7
+    assert feats.set_index("dteday").cnt_roll_7[date] == pytest.approx(expected)
 
 
 def test_weather_lag_is_yesterdays_weather(feats):
