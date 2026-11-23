@@ -79,6 +79,21 @@ def test_weather_lag_is_yesterdays_weather(feats):
     assert checked > 600, "too few rows actually verified"
 
 
+def test_unmapped_weather_label_fails_loudly():
+    """An unseen weather label must raise, not become NaN.
+
+    The real data only holds GOOD/MISTY/BAD, so nothing else exercises the
+    guard in encode_weather. Without it, a relabelled BAD ("Bad") maps to
+    NaN, build_features' dropna() deletes those days, and every other test
+    still passes -- test_no_missing_values runs after the rows are gone.
+    """
+    raw = load_raw()
+    assert (raw.weather == "BAD").any(), "perturbation would be a no-op"
+    raw["weather"] = raw.weather.replace({"BAD": "Bad"})
+    with pytest.raises(ValueError, match="unmapped weather labels"):
+        build_features(raw)
+
+
 def test_no_missing_values(feats):
     assert feats[feature_columns(feats)].isna().sum().sum() == 0
 
