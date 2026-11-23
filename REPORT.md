@@ -51,6 +51,14 @@ not demand. Under a temporal split the real picture is different:
   above the largest value it saw in training, and 56.5% of test days
   exceed the 2011 maximum of 6,043 rides (July 4, 2011).
 
+**One assumption carries the ridge result.** The models see the day's own
+weather (`temp`, `atemp`, `hum`, `windspeed`, `weather_severity`), as the
+starter pipeline does. That is a nowcast with perfect weather foresight,
+not a next-day forecast. Without those five columns, ridge scores 0.4668
+on validation and 0.4516 on test, against persistence at 0.4507 and
+0.5099. Every bit of ridge's edge over "yesterday again" comes from
+knowing today's weather.
+
 Adding yesterday's weather raised validation R^2 by 0.020 for ridge and
 0.025 for hgb, with both baselines unchanged, so I kept it. Its ridge
 coefficient (+121 rides per SD) has the predicted sign: a bad-weather
@@ -144,11 +152,39 @@ trusting it. Ridge earns deployment only if the cost of error is
 genuinely quadratic, such as staffing for storm days. Even then, the
 better design keeps persistence's level and adds ridge's weather
 correction. The anchored model in Exercise 4 is roughly that, and it
-matches persistence on MAE (839) while beating it on R^2 (0.628). This
-analysis only reads residuals of the final models; nothing was refit
-after it.
+matches persistence on MAE (839) while beating it on R^2 (0.628). One
+more fact makes the verdict firmer: ridge's weather correction uses the
+day's *actual* weather. Without it, ridge falls below persistence on test
+(0.4516 vs 0.5099). A deployed forecast would use a weather forecast, so
+the edge measured here is an upper bound. This analysis only reads
+residuals of the final models; nothing was refit after it.
 
 ## Attribution
+
+### Batch audit of this repo (`reports/audit.jsonl`)
+
+The auditor found no leakage (`leakage: none`). It marked
+`baseline_reported: false` and made six findings. My response:
+
+- **Same-day weather drives ridge's edge.** Agreed, and verified. It is
+  now stated in the Headline finding and Exercise 5. I kept the starter's
+  features and reframed the claim; I did not change the pipeline.
+- **Transform outputs carry no baselines.** Agreed for the files. The
+  baselines sit beside every transformed score in the Exercise 4 tables
+  above. I did not re-run the `--test` file to add them, because that
+  would score test a second time.
+- **`make train` writes test scores on every run.** The required
+  `metrics.json` layout includes test, so the pipeline has to compute it.
+  During feature work I printed only validation deltas, but the code
+  cannot prove that. This is a fair limit.
+- **The baseline test scored the test split on every `make test`.**
+  Fixed: it now requires ridge to beat both baselines on validation
+  (commit `25dc001`).
+- **`REPORT.md` was missing.** It did not exist yet when the audit ran;
+  the required commit order puts the audit before the report.
+- **Stale numbers.** The README's test count is fixed. The `0.583` in
+  `DECISIONS.md` is a starter line, which the assignment requires me to
+  keep.
 
 **Model:** Claude Opus 5.5 (`claude-opus-5-5`, 1M-token context), hosted
 by Anthropic, driven through Claude Code 2.1.328. Not the local Ollama
@@ -216,7 +252,7 @@ Everything in the first commit is the course starter.
    Exercise 4 lines).
 7. **Whether the answer is believable:** ridge's edge over persistence is
    real in R^2 but not on a typical day, so it is not deployed as it
-   stands (the Exercise 5 line).
+   stands, and its edge depends on knowing the day's weather (the Exercise 5 and same-day weather lines).
 8. **Methodological guard rails:**
    - raw data is immutable by any route (the two-layer guard line);
    - a test is added wherever a seeded fault stayed green;
