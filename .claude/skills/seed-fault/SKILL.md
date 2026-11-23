@@ -34,9 +34,11 @@ of it.
    - Commit the broken state: `Seed fault N: <what you changed>`.
 
 4. **If everything stayed green, that is the finding.** Name the property
-   no test checks, write the missing test in `tests/`, and run it with the
-   fault still in place to show it goes red. Commit it before restoring. A
-   test never seen failing against the real fault proves nothing.
+   no test checks and write the missing test. Put it in
+   `tests/test_leakage.py`, the only file the hook runs, unless it needs a
+   trained model. Run it with the fault still in place to show it goes red,
+   then commit it before restoring. A test never seen failing against the
+   real fault proves nothing.
 
 5. **Restore** with one Edit that reverses step 2. Confirm
    `git diff <starting commit> -- src/` prints nothing and `make test`

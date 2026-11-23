@@ -113,6 +113,12 @@ silently (exit 0), and `make test` gave `16 passed in 2.00s`.
 Without the shift, the 7-day rolling mean includes today's `cnt`, so the
 feature contains a seventh of the target.
 
+*This fault was run end to end by a fresh headless Claude Code session (Opus
+5.5) invoking my skill, `claude -p '/seed-fault fault 2: delete the .shift(1)
+from cnt_roll_7 in src/features.py'`. It took 13 turns in total (12 tool
+calls), $0.36 and 65 s, and wrote this section itself. The hook fired inside
+that agent's loop.*
+
 **Starting commit:** `d6273b2`, with `16 passed in 2.56s`.
 
 **Change** (commit `d5b4a07`):
