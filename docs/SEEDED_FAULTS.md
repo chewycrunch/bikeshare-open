@@ -187,3 +187,69 @@ silently (exit 0), `git diff d6273b2 -- src/` printed nothing, and
 `make test` gave `16 passed in 1.94s`. Between the hook stderr and the fix,
 the agent made two calls the procedure requires: recording the diff and red
 output, then committing the broken state. Neither is counted.
+
+---
+
+## Fault 3: the unmapped-label `raise` removed from `encode_weather`
+
+Without the guard, a weather label outside `GOOD`/`MISTY`/`BAD` maps to NaN,
+and `build_features`' `dropna()` deletes those days without saying so.
+
+**Starting commit:** `05a0e10`, with `16 passed in 2.23s`.
+
+**Change** (commit `e43018b`). Deleting only the `raise` would leave an
+empty `if` and a SyntaxError, so the guard's two lines go together:
+
+```diff
+@@ -26,8 +26,6 @@ def encode_weather(series: pd.Series) -> pd.Series:
+     """
+     known = series.dropna()
+     unknown = set(known.unique()) - set(WEATHER_ORDER)
+-    if unknown:
+-        raise ValueError(f"unmapped weather labels: {sorted(unknown)}")
+     return series.map(WEATHER_ORDER).astype(float)
+```
+
+**Hook stderr:** hook silent (exit 0).
+
+**Red `make test`** (the `E`/summary lines): none. The suite stayed green:
+
+```
+16 passed in 2.00s
+```
+
+**The finding.** No test gave `encode_weather` a label it doesn't know. The
+real CSV only contains the three known labels, so the guard never fires on
+real data and removing it changes nothing any test sees.
+`test_no_missing_values` can't catch the damage because it checks the
+output *after* `dropna()`, when the NaN rows are already gone. The property
+nobody checked: **an unseen weather label must fail loudly, not delete rows.**
+
+**Missing test** (commit `151caf6`, in `tests/test_leakage.py` so the hook
+now runs it on every `src/*.py` edit). It relabels the BAD days as `"Bad"`
+and expects `build_features` to raise:
+
+```python
+def test_unmapped_weather_label_fails_loudly():
+    raw = load_raw()
+    assert (raw.weather == "BAD").any(), "perturbation would be a no-op"
+    raw["weather"] = raw.weather.replace({"BAD": "Bad"})
+    with pytest.raises(ValueError, match="unmapped weather labels"):
+        build_features(raw)
+```
+
+Run with the fault still in place, `make test`:
+
+```
+E       Failed: DID NOT RAISE ValueError
+FAILED tests/test_leakage.py::test_unmapped_weather_label_fails_loudly - Fail...
+1 failed, 16 passed in 2.38s
+```
+
+**Turns to fix: 1**, counted from the new test's red signal. One Edit put
+the two-line guard back. The hook re-ran silently (exit 0), `git diff
+05a0e10 -- src/` printed nothing, and `make test` gave `17 passed in 1.96s`.
+Committing the test before restoring is required by the procedure and isn't
+counted. Against the original 16-test suite the turn count is undefined:
+there was no red signal to fix from. The fix commit is the one that adds
+this section.
