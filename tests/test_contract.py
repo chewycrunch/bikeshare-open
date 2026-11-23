@@ -3,7 +3,15 @@ import pandas as pd
 import pytest
 from sklearn.metrics import r2_score
 
-from src.config import LAG_WARMUP, TARGET
+from src.config import (
+    ENCODED_COLS,
+    FORBIDDEN,
+    LAG_WARMUP,
+    RAW,
+    RAW_FEATURE_COLS,
+    REDUNDANT_COLS,
+    TARGET,
+)
 from src.features import build_features, feature_columns, reindex_to_calendar
 from src.ingest import load_raw
 from src.train import MODELS, temporal_split
@@ -41,6 +49,28 @@ def test_only_expected_rows_are_dropped(raw, feats):
     allowed_loss = LAG_WARMUP + LAG_WARMUP * missing_days
     lost = len(raw) - len(feats)
     assert lost <= allowed_loss, f"lost {lost} rows; expected at most {allowed_loss}"
+
+
+def test_every_raw_column_is_classified(feats):
+    """A new column in the raw data must not enter the model silently.
+
+    feature_columns() is a denylist, so a column appended to the CSV, or
+    `casual` renamed to something innocent, would become a feature with every
+    other test still green. Here every raw column must be named in
+    src/config.py, and a raw column may reach the model only through
+    RAW_FEATURE_COLS. Reads the header directly so it fails even if
+    load_raw() would not.
+    """
+    raw_cols = set(pd.read_csv(RAW, nrows=0).columns)
+    classified = FORBIDDEN | RAW_FEATURE_COLS | ENCODED_COLS | REDUNDANT_COLS | {"dteday"}
+    unclassified = raw_cols - classified
+    assert not unclassified, (
+        f"raw columns not classified in src/config.py: {sorted(unclassified)}"
+    )
+    admitted = (set(feature_columns(feats)) & raw_cols) - RAW_FEATURE_COLS
+    assert not admitted, (
+        f"raw columns reached the model without being in RAW_FEATURE_COLS: {sorted(admitted)}"
+    )
 
 
 def test_beats_the_mean_baseline(feats):
