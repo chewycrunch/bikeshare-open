@@ -8,7 +8,9 @@ rides) from calendar, weather, and lagged-demand features.
 - `make features` - build `data/processed/features.parquet`
 - `make train` - fit models, write `reports/metrics.json`
 - `make test` - pytest; run this before claiming anything works
-- `make all` - the three pipeline stages in order
+- `make all` - the three pipeline stages; reproduces every number in REPORT.md
+- `/new-feature <idea>` adds a feature test-first; `/seed-fault <fault>`
+  breaks, records and restores, logging to `docs/SEEDED_FAULTS.md`
 
 ## Non-negotiable rules
 - **Never** put `casual` or `registered` in a feature set:
@@ -23,6 +25,12 @@ rides) from calendar, weather, and lagged-demand features.
 - Report the mean baseline **and** the persistence baseline (yesterday's
   count) alongside every model. A negative R^2 is a finding, not a bug
   to hide.
+- `data/raw/` is immutable by any route, Bash included. Its SHA-256 is
+  pinned in `src/config.py`; change data downstream, in code.
+- A new raw column must be classified in `src/config.py` before use
+  (`FORBIDDEN` or a classified set); `tests/test_contract.py` enforces it.
+- `--target-transform` runs never write `reports/metrics.json`; the
+  committed metrics are the untransformed `make all`.
 
 ## Style
 - Standard library, pandas, scikit-learn only. No new dependencies
@@ -39,3 +47,5 @@ rides) from calendar, weather, and lagged-demand features.
   cannot extrapolate to 2012. That is the headline result, not an error.
 - 2012-10-29 (Hurricane Sandy, 22 rides) is in the test set. Expect it in
   any residual plot.
+- The PostToolUse hook runs only `tests/test_leakage.py`, so tests that
+  guard `src/` behaviour go there or the hook cannot catch them.
