@@ -1,0 +1,35 @@
+{
+  "n_features": 15,
+  "features": [
+    "temp",
+    "atemp",
+    "hum",
+    "windspeed",
+    "dayofweek",
+    "is_weekend",
+    "is_holiday",
+    "is_workday",
+    "month_sin",
+    "month_cos",
+    "weather_severity",
+    "weather_severity_lag_1",
+    "cnt_lag_1",
+    "cnt_lag_7",
+    "cnt_roll_7"
+  ],
+  "n_train": 348,
+  "n_valid": 182,
+  "n_test": 184,
+  "ridge_ratio_cnt_lag_1": {
+    "valid": {
+      "r2": 0.3328,
+      "mae": 1118.5
+    }
+  },
+  "hgb_ratio_cnt_lag_1": {
+    "valid": {
+      "r2": 0.5858,
+      "mae": 866.4
+    }
+  }
+}
