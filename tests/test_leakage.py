@@ -4,6 +4,9 @@ test_no_forbidden_features is the single most valuable test in this repo:
 casual + registered == cnt exactly, so any model handed those columns
 scores R^2 = 1.0 and looks brilliant while having learned nothing.
 """
+from itertools import combinations
+
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -29,6 +32,25 @@ def test_no_forbidden_features(feats):
     exactly the fault the Step 7 hook demonstrates."""
     cols = set(feature_columns(feats))
     assert not (cols & FORBIDDEN), f"forbidden columns in feature set: {cols & FORBIDDEN}"
+
+
+def test_no_feature_restates_a_forbidden_column(feats):
+    """Check the values, not the names. No feature, alone or in a pair, may
+    be an exact linear function of a forbidden column, so a leak under an
+    innocent name (`riders = casual + registered`) goes red even though
+    test_no_forbidden_features passes. Every forbidden column is
+    integer-valued, so a fit within half a unit on every row recovers it
+    exactly by rounding: a restatement, not a forecast."""
+    cols = feature_columns(feats)
+    ones = np.ones(len(feats))
+    numeric = set(feats.select_dtypes(include="number").columns)
+    for target in sorted(FORBIDDEN & numeric):
+        y = feats[target].to_numpy(dtype=float)
+        for subset in [*combinations(cols, 1), *combinations(cols, 2)]:
+            X = np.column_stack([feats[list(subset)].to_numpy(dtype=float), ones])
+            coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+            worst = float(np.abs(X @ coef - y).max())
+            assert worst >= 0.5, f"{list(subset)} restates {target!r} (max residual {worst:.2g})"
 
 
 def test_lags_are_true_calendar_lags(feats):
