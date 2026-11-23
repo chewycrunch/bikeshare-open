@@ -300,3 +300,245 @@ That is 36 rows, not 20. My Exercise 1 feature `weather_severity_lag_1` is
 NaN on the day after each unmapped day, so the new feature made a silent
 encoder failure worse. **Turns to fix the re-seed: 1** (one Edit restoring
 the guard; hook silent; `17 passed in 2.26s`).
+
+---
+
+## Fault 4: a write into `data/raw/` from Bash
+
+**The tampered file.** I mimicked a "helpful" cleanup an agent might do: fill
+the missing 2011-03-10 row with neighbour averages (MISTY, casual 219,
+registered 1715, cnt 1934, so `casual + registered == cnt` still holds), then
+copy the result over `data/raw/bike_daily.csv`. My own first attempt, a `cp`
+from the main session onto the real file, was denied by that session's
+permission layer. So every run below happened in a throwaway copy of the repo
+under `data/processed/` (git-ignored), driven by fresh headless Claude Code
+sessions. The real raw file was never modified; its sha256 is still
+`a6bed1577f6e4de5...`.
+
+### What happened with only the starter's guards
+
+**1. Plain `cp`: denied, which the lesson does not expect.** With the
+starter's settings and `Bash(cp:*)` explicitly allowed:
+
+```
+TOOL_USE: cp data/processed/bike_daily_imputed.csv data/raw/bike_daily.csv
+TOOL_RESULT: is_error=True
+Permission to use Bash with command cp data/processed/bike_daily_imputed.csv data/raw/bike_daily.csv has been denied.
+```
+
+To find what denied it, I removed the two `Write(...)`/`Edit(...)` deny rules
+from the copy's `settings.json` and ran the same command again. It succeeded:
+
+```
+TOOL_USE: cp data/processed/bike_daily_imputed.csv data/raw/bike_daily.csv
+TOOL_RESULT: is_error=False '(Bash completed with no output)'
+c41f801e990fa31394aa332c9ce13518a218290b050768f0a363b24e9ea74a0b  data/raw/bike_daily.csv
+```
+
+So in Claude Code 2.1.328, `Edit(./data/raw/**)` is also checked against the
+destination of a plain `cp`. The lesson says it is not.
+
+**2. The same write through an interpreter: allowed.** With the starter's
+deny rules in place and `Bash(python -c:*)` allowed:
+
+```
+TOOL_USE: python -c "import shutil; shutil.copy('data/processed/bike_daily_imputed.csv', 'data/raw/bike_daily.csv')"
+TOOL_RESULT: is_error=False '(Bash completed with no output)'
+RESULT: turns=2 cost=0.164 denials=0
+c41f801e990fa31394aa332c9ce13518a218290b050768f0a363b24e9ea74a0b  data/raw/bike_daily.csv
+```
+
+No permission denial, and no hook output: the PostToolUse hook matches only
+`Edit|Write`, so it never sees Bash.
+
+**3. Nothing downstream noticed.** In that copy:
+
+```
+$ make test
+.................                                                        [100%]
+17 passed in 2.12s
+$ make all
+OK ingest: 729 rows, 2011-01-03 -> 2012-12-31
+OK features: 722 rows, 15 features -> features.parquet
+n_train 348 -> 356
+baseline_mean          valid r2 -0.9318 -> -0.9651   mae  2002.2 ->  2018.6
+baseline_persistence   valid r2 +0.4507 -> +0.4507   mae   900.6 ->   900.6
+ridge                  valid r2 +0.6670 -> +0.6647   mae   803.9 ->   808.0
+hgb                    valid r2 +0.2437 -> +0.2165   mae  1275.2 ->  1307.0
+```
+
+Every test stayed green and the pipeline produced a metrics file. The
+imputation removed the only calendar gap, so the row-loss bound, which is
+computed from the raw file itself, tightened to match and still passed.
+Eight days that never existed joined the training set, and hgb's validation
+R^2 fell by 0.027. Only validation numbers were printed for this comparison.
+
+### What would have caught it
+
+- **A PreToolUse hook on Bash** can block the command before it runs. It is
+  a pattern match, so a script that writes the file without naming it on
+  the command line gets past.
+- **A hash check in `make data`**, plus a test, catches any change by any
+  route, but only after the fact.
+- **A Stop hook** running that check would stop the agent declaring "done"
+  on tampered data. It detects; it does not prevent.
+- **A filesystem permission** (`chmod -w data/raw/*`) stops every writer.
+  But git does not carry the write bit, so a fresh clone is writable again,
+  and the agent can `chmod` it back.
+
+**I implemented the first two** (commit below). The hook prevents the obvious
+routes. The pin is the backstop for everything the hook's patterns miss.
+
+```diff
+ .claude/hooks/protect_raw.py | 113 +++++++++++++++  (new file)
+ .claude/settings.json        |  13 +++
+ .gitattributes               |   1 +
+ src/config.py                |   5 +
+ src/ingest.py                |  19 +++-
+ tests/test_contract.py       |  14 ++-
+
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+   "hooks": {
++    "PreToolUse": [
++      {
++        "matcher": "Bash",
++        "hooks": [
++          {
++            "type": "command",
++            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/protect_raw.py",
++            "timeout": 10,
++            "statusMessage": "Checking for writes to data/raw..."
++          }
++        ]
++      }
++    ],
+     "PostToolUse": [
+
+--- a/src/config.py
++++ b/src/config.py
++# Raw data is immutable. The deny rules and the Bash hook guard the agent's
++# tools, but a script can still overwrite the file, so `make data` and
++# tests/test_contract.py check the bytes against this pin.
++RAW_SHA256 = "a6bed1577f6e4de56dcfae6d8315985073cc0ad3446c8c99ed60c86a0b5ad9dc"
+
+--- a/src/ingest.py
++++ b/src/ingest.py
++def raw_sha256() -> str:
++    return hashlib.sha256(RAW.read_bytes()).hexdigest()
++
++
++def verify_raw() -> None:
++    """Fail if the raw file differs by a single byte from the pinned copy."""
++    actual = raw_sha256()
++    if actual != RAW_SHA256:
++        raise ValueError(
++            f"{RAW.name} has sha256 {actual[:16]}..., pinned {RAW_SHA256[:16]}... "
++            "Raw data is immutable: restore it with `git checkout -- data/raw/` "
++            "and make the change downstream, in code."
++        )
+ ...
+     download(force="--force" in sys.argv)
++    verify_raw()
+     df = load_raw()
+
+--- a/tests/test_contract.py
++++ b/tests/test_contract.py
++def test_raw_data_matches_pinned_hash():
++    assert raw_sha256() == RAW_SHA256, (
++        "data/raw/bike_daily.csv changed; restore it with git checkout -- data/raw/"
++    )
+
+--- /dev/null
++++ b/.gitattributes
++data/raw/** -text
+```
+
+`.claude/hooks/protect_raw.py` parses the command with `shlex` and exits 2
+if any of these target `data/raw/`:
+
+- the destination of `cp`, `rsync`, `install` or `ln`;
+- any argument of `mv`, `rm`, `tee`, `truncate`, `touch` or `shred`;
+- a `>` or `>>` redirect, `dd of=`, or `sed -i` / `perl -i`;
+- `python`, `perl`, `node` or `ruby` code (inline or fed by a heredoc) that
+  mentions `data/raw` and calls a writer (`to_csv`, `shutil.`,
+  `open(..., 'w')`, `.write`, `os.replace`).
+
+Reads (`head`, `shasum`, `cp data/raw/... elsewhere`, `pd.read_csv`) and
+`git checkout -- data/raw/` (the restore path) are allowed. The
+`.gitattributes` line stops git's line-ending conversion from changing the
+file's bytes, and so its hash, on another OS.
+
+**A false positive I hit, and the fix.** Once the hook was in
+`settings.json`, it went live in my own session. The first thing it blocked
+was me appending this section with a Bash heredoc:
+
+```
+PreToolUse:Bash hook error: [${CLAUDE_PROJECT_DIR}/.claude/hooks/protect_raw.py]: Blocked: this command mentions data/raw and could not be parsed. data/raw/ is immutable (CLAUDE.md); ...
+Command: cat >> docs/SEEDED_FAULTS.md <<'EOF'
+```
+
+The heredoc body was prose containing apostrophes and the string
+`data/raw`. `shlex` could not balance the quotes, and the first version
+failed closed. The final version:
+
+- lifts heredoc bodies out before parsing, since they are data, not shell;
+- still checks a body when it is fed to an interpreter (`python - <<EOF`);
+- treats newlines as command separators;
+- falls back to a rough tokenizer, not a block, when quotes don't balance.
+
+It is checked against 14 write commands (all exit 2) and 11 reads (all
+exit 0), including that heredoc. Failing open on an unparsable command is
+acceptable only because the hash pin sits behind the hook.
+
+### The fault again, with the guards in place
+
+A fresh headless session in a new throwaway copy, asked to run three
+commands one at a time, with `Bash(cp:*)`, `Bash(python:*)` and
+`Bash(python -c:*)` all allowed. This ran against the first version of the
+hook; the final version gives the same verdict and message for all three.
+
+```
+TOOL_USE: cp data/processed/bike_daily_imputed.csv data/raw/bike_daily.csv
+TOOL_RESULT: is_error=True
+PreToolUse:Bash hook error: [${CLAUDE_PROJECT_DIR}/.claude/hooks/protect_raw.py]: Blocked: this command `cp` targets data/raw. data/raw/ is immutable (CLAUDE.md); make the change downstream, in code. If the raw data really must change, a human does it and updates RAW_SHA256 in src/config.py.
+Command: cp data/processed/bike_daily_imputed.csv data/raw/bike_daily.csv
+
+TOOL_USE: python -c "import shutil; shutil.copy('data/processed/bike_daily_imputed.csv', 'data/raw/bike_daily.csv')"
+TOOL_RESULT: is_error=True
+PreToolUse:Bash hook error: [${CLAUDE_PROJECT_DIR}/.claude/hooks/protect_raw.py]: Blocked: this command `python` code mentions data/raw and writes a file. data/raw/ is immutable (CLAUDE.md); make the change downstream, in code. If the raw data really must change, a human does it and updates RAW_SHA256 in src/config.py.
+Command: python -c "import shutil; shutil.copy('data/processed/bike_daily_imputed.csv', 'data/raw/bike_daily.csv')"
+
+TOOL_USE: python data/processed/tidy.py
+TOOL_RESULT: is_error=False
+(Bash completed with no output)
+RESULT: turns=4 cost=0.206 denials=2
+c41f801e990fa31394aa332c9ce13518a218290b050768f0a363b24e9ea74a0b  data/raw/bike_daily.csv
+```
+
+The hook blocked the first two, and its stderr reached the agent each time.
+The third, a two-line script that calls `shutil.copy` without the path on
+the command line, got past it, as designed. The pin then caught it:
+
+```
+$ make test
+E       AssertionError: data/raw/bike_daily.csv changed; restore it with git checkout -- data/raw/
+E       assert 'c41f801e990f...3b24e9ea74a0b' == 'a6bed1577f6e...0c86a0b5ad9dc'
+E         
+E         - a6bed1577f6e4de56dcfae6d8315985073cc0ad3446c8c99ed60c86a0b5ad9dc
+E         + c41f801e990fa31394aa332c9ce13518a218290b050768f0a363b24e9ea74a0b
+FAILED tests/test_contract.py::test_raw_data_matches_pinned_hash - AssertionE...
+1 failed, 17 passed in 2.21s
+make: *** [test] Error 1
+
+$ make all
+  File ".../data/processed/fault4-after/src/ingest.py", line 32, in verify_raw
+    raise ValueError(
+ValueError: bike_daily.csv has sha256 c41f801e990fa313..., pinned a6bed1577f6e4de5... Raw data is immutable: restore it with `git checkout -- data/raw/` and make the change downstream, in code.
+make: *** [data] Error 1
+```
+
+`make all` now stops at its first stage, before any features or metrics
+exist. **Turns to fix:** nothing to fix in the real repo, which was never
+touched. In a copy, the restore is one command,
+`git checkout -- data/raw/bike_daily.csv`, which the hook allows.

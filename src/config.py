@@ -20,6 +20,11 @@ DATA_URL = (
     "interpretable-ml-book/master/data/bike.csv"
 )
 
+# Raw data is immutable. The deny rules and the Bash hook guard the agent's
+# tools, but a script can still overwrite the file, so `make data` and
+# tests/test_contract.py check the bytes against this pin.
+RAW_SHA256 = "a6bed1577f6e4de56dcfae6d8315985073cc0ad3446c8c99ed60c86a0b5ad9dc"
+
 TARGET = "cnt"
 
 # --- Three reasons a column is kept out of the feature set --------------

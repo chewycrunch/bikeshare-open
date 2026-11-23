@@ -9,11 +9,12 @@ from src.config import (
     LAG_WARMUP,
     RAW,
     RAW_FEATURE_COLS,
+    RAW_SHA256,
     REDUNDANT_COLS,
     TARGET,
 )
 from src.features import build_features, feature_columns, reindex_to_calendar
-from src.ingest import load_raw
+from src.ingest import load_raw, raw_sha256
 from src.train import MODELS, temporal_split
 
 
@@ -25,6 +26,17 @@ def raw():
 @pytest.fixture(scope="module")
 def feats(raw):
     return build_features(raw)
+
+
+def test_raw_data_matches_pinned_hash():
+    """Raw data is immutable. Imputing the missing 2011-03-10 and copying the
+    result over the raw file passed every other test while silently adding 8
+    training rows and moving three of four validation scores
+    (docs/SEEDED_FAULTS.md, fault 4). Checking the bytes catches any change,
+    by any route."""
+    assert raw_sha256() == RAW_SHA256, (
+        "data/raw/bike_daily.csv changed; restore it with git checkout -- data/raw/"
+    )
 
 
 def test_calendar_is_complete_before_lagging(raw):
