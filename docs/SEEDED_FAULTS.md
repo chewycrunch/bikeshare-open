@@ -542,3 +542,107 @@ make: *** [data] Error 1
 exist. **Turns to fix:** nothing to fix in the real repo, which was never
 touched. In a copy, the restore is one command,
 `git checkout -- data/raw/bike_daily.csv`, which the hook allows.
+
+---
+
+## Extra fault 5: a leaked column under an innocent name
+
+Not one of the required four. The grading notes say a leaked column renamed
+to something innocent will be tried, so I seeded it first.
+
+**Change** (commit `acf2097`):
+
+```diff
+@@ -79,6 +79,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
+     out["cnt_lag_1"] = out[TARGET].shift(1)
+     out["cnt_lag_7"] = out[TARGET].shift(LAG_WARMUP)
+     out["cnt_roll_7"] = out[TARGET].shift(1).rolling(LAG_WARMUP).mean()
++    out["riders"] = out.casual + out.registered
+ 
+     return out.dropna().reset_index(drop=True)
+```
+
+**Hook stderr:** hook silent (exit 0). **Red `make test`:** none.
+
+```
+18 passed in 2.13s
+riders in features: True | ridge VALID r2 = 0.9999
+```
+
+**The finding.** Every leakage check in the suite works on column *names*.
+`riders` is not in `FORBIDDEN`, so the gate test passes. It is not a raw
+column, so the classification test passes. A model at R^2 0.9999 clears
+`test_beats_the_mean_baseline` easily. Nothing looked at the *values*.
+
+**Missing test** (commit `a4b7a93`, in `tests/test_leakage.py` so the hook
+runs it). It fits every forbidden numeric column on every single feature and
+every pair of features by least squares with an intercept, and fails if any
+fit is within half a unit on every row. All the forbidden columns are
+integer-valued, so a fit that close recovers the column exactly by rounding.
+That catches `riders`, a renamed copy of `casual` alone, a scaled `cnt`, and
+a renamed `instant` or `days_since_2011`. 840 fits, 0.05 s.
+
+Run with the fault in place, `make test`:
+
+```
+E               AssertionError: ['riders'] restates 'cnt' (max residual 1.8e-12)
+E               assert 1.8189894035458565e-12 >= 0.5
+FAILED tests/test_leakage.py::test_no_feature_restates_a_forbidden_column - A...
+1 failed, 18 passed in 2.24s
+make: *** [test] Error 1
+```
+
+**Hook stderr after re-seeding** (restore, then seed again with Edits;
+exit 2):
+
+```
+Leakage tests failed after editing /Users/chewy/Desktop/bikeshare-open/src/features.py:
+        test_no_forbidden_features passes. Every forbidden column is
+        integer-valued, so a fit within half a unit on every row recovers it
+        exactly by rounding: a restatement, not a forecast."""
+        cols = feature_columns(feats)
+        ones = np.ones(len(feats))
+        numeric = set(feats.select_dtypes(include="number").columns)
+        for target in sorted(FORBIDDEN & numeric):
+            y = feats[target].to_numpy(dtype=float)
+            for subset in [*combinations(cols, 1), *combinations(cols, 2)]:
+                X = np.column_stack([feats[list(subset)].to_numpy(dtype=float), ones])
+                coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+                worst = float(np.abs(X @ coef - y).max())
+>               assert worst >= 0.5, f"{list(subset)} restates {target!r} (max residual {worst:.2g})"
+E               AssertionError: ['riders'] restates 'cnt' (max residual 1.8e-12)
+E               assert 1.8189894035458565e-12 >= 0.5
+
+tests/test_leakage.py:53: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_leakage.py::test_no_feature_restates_a_forbidden_column - A...
+1 failed, 9 passed in 0.46s
+```
+
+**Turns to fix: 1.** One Edit deleting the `riders` line. The hook was
+silent, `git diff be6fe96 -- src/` printed nothing, and `make test` gave
+`19 passed in 2.61s`.
+
+---
+
+## Extra: two more changes the suite now catches
+
+Both are from the throwaway-copy check run when the classification test was
+added (commit `e4296da`). Neither touched the real raw file.
+
+```
+=== (a) new numeric column appended to the raw CSV
+E       AssertionError: raw columns not classified in src/config.py: ['visitors']
+FAILED tests/test_contract.py::test_every_raw_column_is_classified - Assertio...
+1 failed, 14 passed in 1.80s
+=== (b) casual dropped from LEAKAGE_COLS
+E       AssertionError: raw columns not classified in src/config.py: ['casual']
+FAILED tests/test_contract.py::test_every_raw_column_is_classified - Assertio...
+1 failed, 14 passed in 1.83s
+--- leakage tests only (what the hook runs):
+7 passed in 0.40s
+```
+
+In (b), all seven leakage tests stay green, so the hook says nothing. Only
+`make test` catches it. Appending a column now also fails the hash pin from
+fault 4.
