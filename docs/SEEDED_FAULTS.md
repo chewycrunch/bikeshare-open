@@ -105,3 +105,79 @@ no defence against leakage.
 
 **Turns to fix: 1.** One Edit removing `+ ["casual"]`. The hook re-ran
 silently (exit 0), and `make test` gave `16 passed in 2.00s`.
+
+---
+
+## Fault 2: `.shift(1)` removed from `cnt_roll_7`
+
+Without the shift, the 7-day rolling mean includes today's `cnt`, so the
+feature contains a seventh of the target.
+
+**Starting commit:** `d6273b2`, with `16 passed in 2.56s`.
+
+**Change** (commit `d5b4a07`):
+
+```diff
+@@ -78,7 +78,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
+     # If you add a longer lag, raise LAG_WARMUP in src/config.py.
+     out["cnt_lag_1"] = out[TARGET].shift(1)
+     out["cnt_lag_7"] = out[TARGET].shift(LAG_WARMUP)
+-    out["cnt_roll_7"] = out[TARGET].shift(1).rolling(LAG_WARMUP).mean()
++    out["cnt_roll_7"] = out[TARGET].rolling(LAG_WARMUP).mean()
+ 
+     return out.dropna().reset_index(drop=True)
+```
+
+**Hook stderr** (exit 2, delivered to the agent as soon as the Edit landed).
+The hook keeps only the last 20 lines (`tail -20`), so the fixture repr is
+cut down to its last line:
+
+```
+Leakage tests failed after editing /Users/chewy/Desktop/bikeshare-open/src/features.py:
+[714 rows x 29 columns]
+
+    def test_rolling_mean_excludes_today(feats):
+        """cnt_roll_7 must be the mean of the 7 calendar days *before* today."""
+        by_date = feats.set_index("dteday")[TARGET]
+        date = feats.dteday.iloc[200]
+        window = [date - pd.Timedelta(days=k) for k in range(1, 8)]
+        if all(d in by_date.index for d in window):
+            expected = sum(by_date[d] for d in window) / 7
+>           assert feats.set_index("dteday").cnt_roll_7[date] == pytest.approx(expected)
+E           assert np.float64(4389.0) == 4414.857142857143 ± 0.00441486
+E             
+E             comparison failed
+E             Obtained: 4389.0
+E             Expected: 4414.857142857143 ± 0.00441486
+
+tests/test_leakage.py:57: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_leakage.py::test_rolling_mean_excludes_today - assert np.fl...
+1 failed, 7 passed in 0.58s
+```
+
+**Red `make test`** (the `E`/summary lines):
+
+```
+E           assert np.float64(4389.0) == 4414.857142857143 ± 0.00441486
+E             
+E             comparison failed
+E             Obtained: 4389.0
+E             Expected: 4414.857142857143 ± 0.00441486
+FAILED tests/test_leakage.py::test_rolling_mean_excludes_today - assert np.fl...
+1 failed, 15 passed in 2.18s
+```
+
+Only one test catches this, and it checks a single date (`iloc[200]`). It
+also sits behind an `if all(...)` guard: if that window ever touches a
+missing day, the test passes without asserting anything. That does not
+happen today, because `reindex_to_calendar` fills the 2011-03-10 gap and row
+200 falls well after it. Still, this fault is guarded by one assertion on
+one row. `test_beats_the_mean_baseline` stayed green again, because a leaked
+feature makes the model look better, not worse.
+
+**Turns to fix: 1.** One Edit putting `.shift(1)` back. The hook re-ran
+silently (exit 0), `git diff d6273b2 -- src/` printed nothing, and
+`make test` gave `16 passed in 1.94s`. Between the hook stderr and the fix,
+the agent made two calls the procedure requires: recording the diff and red
+output, then committing the broken state. Neither is counted.
