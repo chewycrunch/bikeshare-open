@@ -38,7 +38,9 @@ of it.
    `tests/test_leakage.py`, the only file the hook runs, unless it needs a
    trained model. Run it with the fault still in place to show it goes red,
    then commit it before restoring. A test never seen failing against the
-   real fault proves nothing.
+   real fault proves nothing. The hook ignores edits under `tests/`, so to
+   record its stderr against the new test, restore the fault with one Edit
+   and seed it again with a second.
 
 5. **Restore** with one Edit that reverses step 2. Confirm
    `git diff <starting commit> -- src/` prints nothing and `make test`

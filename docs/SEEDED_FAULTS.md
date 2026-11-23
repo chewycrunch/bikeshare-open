@@ -210,7 +210,13 @@ empty `if` and a SyntaxError, so the guard's two lines go together:
      return series.map(WEATHER_ORDER).astype(float)
 ```
 
-**Hook stderr:** hook silent (exit 0).
+*Run by a fresh headless session invoking `/seed-fault` (17 turns, $0.50,
+97 s), which wrote most of this section. The re-seed at the end, the hook
+stderr from it, and the row count are mine, from the original session.*
+
+**Hook stderr:** hook silent (exit 0) on the first seeding, because no test
+then covered the guard. For the stderr after the new test existed, see
+"Re-seeded against the new test" below.
 
 **Red `make test`** (the `E`/summary lines): none. The suite stayed green:
 
@@ -253,3 +259,44 @@ Committing the test before restoring is required by the procedure and isn't
 counted. Against the original 16-test suite the turn count is undefined:
 there was no red signal to fix from. The fix commit is the one that adds
 this section.
+
+**Re-seeded against the new test.** The fresh agent added the test through
+an edit under `tests/`, which the hook ignores, so the hook never ran with
+the fault in place. To show the hook now catches the fault, I re-applied
+the same two-line deletion with an Edit to `src/features.py`. Hook stderr
+(exit 2):
+
+```
+Leakage tests failed after editing /Users/chewy/Desktop/bikeshare-open/src/features.py:
+___________________ test_unmapped_weather_label_fails_loudly ___________________
+
+    def test_unmapped_weather_label_fails_loudly():
+        """An unseen weather label must raise, not become NaN.
+    
+        The real data only holds GOOD/MISTY/BAD, so nothing else exercises the
+        guard in encode_weather. Without it, a relabelled BAD ("Bad") maps to
+        NaN, build_features' dropna() deletes those days, and every other test
+        still passes -- test_no_missing_values runs after the rows are gone.
+        """
+        raw = load_raw()
+        assert (raw.weather == "BAD").any(), "perturbation would be a no-op"
+        raw["weather"] = raw.weather.replace({"BAD": "Bad"})
+>       with pytest.raises(ValueError, match="unmapped weather labels"):
+E       Failed: DID NOT RAISE ValueError
+
+tests/test_leakage.py:93: Failed
+=========================== short test summary info ============================
+FAILED tests/test_leakage.py::test_unmapped_weather_label_fails_loudly - Fail...
+1 failed, 8 passed in 0.71s
+```
+
+**The damage the guard prevents**, measured with the fault in place:
+
+```
+rows with real labels: 714; with BAD relabelled "Bad" and no guard: 678 -> 36 rows silently dropped, no error
+```
+
+That is 36 rows, not 20. My Exercise 1 feature `weather_severity_lag_1` is
+NaN on the day after each unmapped day, so the new feature made a silent
+encoder failure worse. **Turns to fix the re-seed: 1** (one Edit restoring
+the guard; hook silent; `17 passed in 2.26s`).
