@@ -1,6 +1,7 @@
 """Guard rails on the ingest contract and the trained model's behaviour."""
 import pandas as pd
 import pytest
+from sklearn.base import clone
 from sklearn.metrics import r2_score
 
 from src.config import (
@@ -85,13 +86,18 @@ def test_every_raw_column_is_classified(feats):
     )
 
 
-def test_beats_the_mean_baseline(feats):
-    """A model that cannot beat predicting the training mean is not a result."""
+def test_beats_both_baselines_on_validation(feats):
+    """A model that cannot beat 'yesterday again' is not a result. Judged on
+    validation: this runs on every `make test`, so scoring the test split
+    here would make it a pass/fail gate in the development loop. (The
+    starter version asserted test R^2 > 0.4, below persistence's 0.51.)"""
     cols = feature_columns(feats)
-    train, _, test = temporal_split(feats)
-    ridge = MODELS["ridge"]
-    ridge.fit(train[cols], train[TARGET])
-    assert r2_score(test[TARGET], ridge.predict(test[cols])) > 0.4
+    train, valid, _ = temporal_split(feats)
+    scores = {}
+    for name in ("baseline_mean", "baseline_persistence", "ridge"):
+        model = clone(MODELS[name]).fit(train[cols], train[TARGET])
+        scores[name] = r2_score(valid[TARGET], model.predict(valid[cols]))
+    assert scores["ridge"] > max(scores["baseline_mean"], scores["baseline_persistence"]), scores
 
 
 def test_persistence_baseline_is_reported():
